@@ -12,8 +12,8 @@ class Settings(BaseSettings):
     import_delay_seconds: float = 2.0
     import_max_pages: int = 150
     import_max_listings: int = 5000
-    target_city: str = "Велико Търново"
-    target_city_url_token: str = "grad-veliko-tarnovo"
+    target_city: str = "София"
+    target_city_url_token: str = "grad-sofiya"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

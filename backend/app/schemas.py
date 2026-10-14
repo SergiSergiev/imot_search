@@ -63,6 +63,7 @@ class ListingBaseOut(BaseModel):
     title: str
     description: str
     summary: str | None
+    transaction_type: str
     property_type: str | None
     room_count: int | None
     price_eur: float | None
@@ -75,6 +76,7 @@ class ListingBaseOut(BaseModel):
     total_floors: int | None
     condition: str | None
     construction_type: str | None
+    construction_age: str | None
     construction_year: int | None
     first_seen_at: datetime
     last_seen_at: datetime
@@ -106,6 +108,7 @@ class ManualListing(BaseModel):
     source_url: str
     title: str
     description: str = ""
+    transaction_type: str = "sale"
     property_type: str | None = None
     room_count: int | None = None
     price_eur: float | None = None
@@ -116,6 +119,7 @@ class ManualListing(BaseModel):
     total_floors: int | None = None
     condition: str | None = None
     construction_type: str | None = None
+    construction_age: str | None = None
     construction_year: int | None = None
     contact_name: str | None = None
     contact_phone: str | None = None
@@ -132,6 +136,10 @@ class SearchCreate(BaseModel):
     favorites_only: bool = False
     notes_only: bool = False
     min_score: float = Field(default=0, ge=0, le=100)
+    transaction_type: str | None = Field(default=None, pattern="^(sale|rent)$")
+    construction_age: str | None = Field(default=None, pattern="^(new|old)$")
+    listing_id: int | None = Field(default=None, ge=1)
+    limit: int = Field(default=100, ge=1, le=200)
 
 
 class CriterionExplanation(BaseModel):
@@ -156,6 +164,8 @@ class SearchResponse(BaseModel):
     query: str
     parsed_criteria: dict[str, Any]
     parser: str
+    answer: str
+    total_count: int
     results: list[SearchResult]
 
 

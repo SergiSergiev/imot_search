@@ -6,16 +6,23 @@ import Link from "next/link";
 import { api, euro, Listing, SearchResponse, SearchResult } from "@/lib/api";
 
 const examples = [
-  "Тристаен във Велико Търново до 180 000 евро, поне 85 кв.м, не последен етаж",
-  "Двустаен в Колю Фичето или Бузлуджа с асансьор и добра цена на квадрат",
-  "Покажи ми най-добрите имоти за инвестиция във Велико Търново",
+  "Търся инвестиционен апартамент, подценен спрямо сходните в квартала. Предпочитам ново строителство, но приемам старо, ако цената на кв.м е поне 15% под медианата и не е за основен ремонт. Изключи партер и последен етаж.",
+  "Намери семеен тристаен до 280 000 евро в тих район, близо до парк и училище. Накажи обявите до голям булевард и отбележи къде липсва информация за шум, асансьор или паркиране.",
+  "Кои двустайни под наем изглеждат най-изгодни спрямо площта, обзавеждането и квартала, но имат подозрително кратко или неясно описание?",
+  "Сравни ново и старо строителство в Лозенец и Хладилника. При старото допусни ремонт до 20 000 евро и обясни кога по-ниската цена компенсира риска.",
+  "Покажи обяви, които вероятно са пренебрегнати: лоши снимки или липсващи данни, но добра цена на квадрат, тераса и нормален етаж. Подготви въпроси към брокера.",
+  "Кои обяви не казват дали има асансьор, година на строителство или паркомясто, въпреки че са на висок етаж и над средната цена за квартала?",
 ];
 
 function scoreTone(score: number) { return score >= 80 ? "great" : score >= 60 ? "good" : score >= 40 ? "average" : "weak"; }
+const transactionLabel = (value: Listing["transaction_type"]) => value === "rent" ? "Под наем" : "Продажба";
+const constructionLabel = (value: Listing["construction_age"]) => value === "new" ? "Ново строителство" : value === "old" ? "Старо строителство" : "Строителство неуточнено";
 
 function ListingCard({ result, onFavorite }: { result: SearchResult; onFavorite: (listing: Listing) => void }) {
   const { listing, score, explanations } = result;
-  const positives = explanations.filter((item) => item.status === "met").slice(0, 3);
+  const concerns = explanations.filter((item) => ["unmet", "unknown", "partial"].includes(item.status)).slice(0, 4);
+  const positives = explanations.filter((item) => item.status === "met").slice(0, 2);
+  const analysis = [...positives, ...concerns].slice(0, 6);
   return <article className="listing-card">
     <div className="photo-wrap">
       {listing.primary_image ? <img src={listing.primary_image} alt="" /> : <div className="photo-placeholder"><Building size={42} /></div>}
@@ -24,6 +31,7 @@ function ListingCard({ result, onFavorite }: { result: SearchResult; onFavorite:
     </div>
     <div className="listing-body">
       <div className="eyebrow"><MapPin size={15} /> {listing.district || "София"}</div>
+      <div className="listing-tags"><span>{transactionLabel(listing.transaction_type)}</span><span>{constructionLabel(listing.construction_age)}</span></div>
       <h2>{listing.title}</h2>
       <div className="price-line"><strong>{euro(listing.price_eur)}</strong><span>{listing.price_per_sqm_eur ? `${Math.round(listing.price_per_sqm_eur).toLocaleString("bg-BG")} €/м²` : "няма цена/м²"}</span></div>
       <div className="facts">
@@ -31,9 +39,10 @@ function ListingCard({ result, onFavorite }: { result: SearchResult; onFavorite:
         <span>{listing.room_count || "—"} стаи</span>
         <span>{listing.floor_number ?? listing.floor_label ?? "—"}/{listing.total_floors ?? "—"} етаж</span>
       </div>
+      <p className="listing-summary">{(listing.summary || listing.description || "Няма подробно описание.").slice(0, 260)}{(listing.summary || listing.description || "").length > 260 ? "…" : ""}</p>
       <div className="why">
-        <span className="why-title"><Sparkles size={15} /> Защо е подходящ</span>
-        {positives.map((item) => <p key={item.criterion}>✓ {item.explanation}</p>)}
+        <span className="why-title"><Sparkles size={15} /> Обяснение на оценката</span>
+        {analysis.map((item) => <p className={`reason-${item.status}`} key={item.criterion}>{item.status === "met" ? "✓" : item.status === "unmet" ? "−" : "?"} {item.explanation}</p>)}
       </div>
       <div className="card-actions">
         <Link className="primary-link" href={`/listings/${listing.id}`}>Виж детайли <ArrowRight size={17} /></Link>
@@ -51,10 +60,12 @@ export default function Home() {
   const [error, setError] = useState("");
   const [minScore, setMinScore] = useState(0);
   const [favoritesOnly, setFavoritesOnly] = useState(false);
+  const [transactionType, setTransactionType] = useState("");
+  const [constructionAge, setConstructionAge] = useState("");
 
   async function runSearch() {
     setLoading(true); setError("");
-    try { setData(await api<SearchResponse>("/api/searches", { method: "POST", body: JSON.stringify({ query, min_score: minScore, favorites_only: favoritesOnly }) })); }
+    try { setData(await api<SearchResponse>("/api/searches", { method: "POST", body: JSON.stringify({ query, min_score: minScore, favorites_only: favoritesOnly, transaction_type: transactionType || null, construction_age: constructionAge || null }) })); }
     catch (err) { setError(err instanceof Error ? err.message : "Грешка"); }
     finally { setLoading(false); }
   }
@@ -67,12 +78,12 @@ export default function Home() {
 
   return <div className="page-shell">
     <section className="hero">
-      <div className="hero-copy"><div className="kicker"><Sparkles size={16} /> Имоти във Велико Търново</div><h1>Намери имота, който<br /><em>наистина ти пасва.</em></h1><p>Опиши какво търсиш във Велико Търново. Ще подредим офертите и ще обясним всяка препоръка.</p></div>
+      <div className="hero-copy"><div className="kicker"><Sparkles size={16} /> Имоти в София</div><h1>Намери имота, който<br /><em>наистина ти пасва.</em></h1><p>Опиши какво търсиш в София. Ще подредим офертите и ще обясним всяка препоръка.</p></div>
       <div className="search-panel">
         <label htmlFor="search">Какъв имот търсиш?</label>
         <textarea id="search" value={query} onChange={(e) => setQuery(e.target.value)} />
         <div className="search-footer"><span>Пиши свободно — бюджет, квартал, условия...</span><button onClick={runSearch} disabled={loading}><Search size={19} /> {loading ? "Анализирам..." : "Намери имоти"}</button></div>
-        <div className="chips">{examples.map((example, i) => <button key={example} onClick={() => setQuery(example)}>Пример {i + 1}</button>)}</div>
+        <div className="chips">{examples.map((example, i) => <button key={example} title={example} onClick={() => setQuery(example)}>Сложна заявка {i + 1}</button>)}</div>
       </div>
     </section>
 
@@ -81,13 +92,18 @@ export default function Home() {
         <div className="filter-title"><AdjustmentsHorizontal size={19} /><strong>Бързи филтри</strong></div>
         <label>Минимален match <strong>{minScore}</strong></label>
         <input type="range" min="0" max="90" step="10" value={minScore} onChange={(e) => setMinScore(Number(e.target.value))} />
+        <label htmlFor="transaction-type">Вид сделка</label>
+        <select id="transaction-type" value={transactionType} onChange={(e) => setTransactionType(e.target.value)}><option value="">Всички</option><option value="sale">Продажба</option><option value="rent">Под наем</option></select>
+        <label htmlFor="construction-age">Строителство</label>
+        <select id="construction-age" value={constructionAge} onChange={(e) => setConstructionAge(e.target.value)}><option value="">Всички</option><option value="new">Ново</option><option value="old">Старо</option></select>
         <label className="check"><input type="checkbox" checked={favoritesOnly} onChange={(e) => setFavoritesOnly(e.target.checked)} /><span>Само любими</span></label>
         <button className="apply" onClick={runSearch}>Приложи</button>
         {data && <div className="parsed"><span>Разбрана заявка</span>{Object.entries(data.parsed_criteria).filter(([, v]) => Array.isArray(v) ? v.length : Boolean(v)).map(([k, v]) => <p key={k}><strong>{k.replaceAll("_", " ")}</strong><br />{Array.isArray(v) ? v.join(", ") : String(v)}</p>)}</div>}
       </aside>
       <div className="results">
-        <div className="results-head"><div><span className="section-label">ПОДБРАНИ ЗА ТЕБ</span><h2>{data?.results.length ?? 0} подходящи имота</h2></div><span className="sort">Подредени по match score</span></div>
+        <div className="results-head"><div><span className="section-label">ПОДБРАНИ ЗА ТЕБ</span><h2>{data?.total_count ?? 0} подходящи имота</h2>{data && data.total_count > data.results.length && <small>Показани са топ {data.results.length} резултата</small>}</div><span className="sort">Подредени по match score</span></div>
         {error && <div className="error">{error}. Увери се, че backend-ът работи на порт 8000.</div>}
+        {data?.answer && <div className="local-answer"><Sparkles size={18} /><div><strong>Локален анализ</strong><p>{data.answer}</p></div></div>}
         {data?.results.map((result) => <ListingCard key={result.listing.id} result={result} onFavorite={favorite} />)}
       </div>
     </section>

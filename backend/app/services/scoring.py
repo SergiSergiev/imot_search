@@ -2,7 +2,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..models import Listing
+from ..config import get_settings
 from .ai import SearchIntent
+
+
+settings = get_settings()
 
 
 @dataclass
@@ -23,9 +27,37 @@ def _features(listing: Listing) -> dict[str, Any]:
 def score_listing(listing: Listing, intent: SearchIntent, median_ppm: float | None) -> tuple[float, bool, list[ScoreLine]]:
     lines: list[ScoreLine] = []
     hard_passed = True
+    features = _features(listing)
 
     def add(key: str, status: str, weight: float, ratio: float, actual: Any, expected: Any, text: str) -> None:
         lines.append(ScoreLine(key, status, weight, round(weight * ratio, 1), str(actual) if actual is not None else None, str(expected) if expected is not None else None, text))
+
+    if intent.transaction_types:
+        match = listing.transaction_type in intent.transaction_types
+        add("transaction_type", "met" if match else "unmet", 0, 0, listing.transaction_type, ", ".join(intent.transaction_types), "Видът на сделката съвпада." if match else "Обявата е за различен вид сделка.")
+        hard_passed &= match
+
+    if intent.construction_ages:
+        known = listing.construction_age in {"new", "old"}
+        match = known and listing.construction_age in intent.construction_ages
+        add("construction_age", "met" if match else ("unmet" if known else "unknown"), 0, 0, listing.construction_age, ", ".join(intent.construction_ages), "Периодът на строителството съвпада." if match else "Периодът на строителството не съвпада или не е уточнен.")
+        hard_passed &= match
+
+    if intent.preferred_construction_age:
+        preferred = listing.construction_age == intent.preferred_construction_age
+        discount = intent.accept_alternative_below_median_pct or 0
+        alternative_ok = (
+            listing.construction_age in {"new", "old"}
+            and listing.construction_age != intent.preferred_construction_age
+            and listing.price_per_sqm_eur is not None
+            and median_ppm is not None
+            and listing.price_per_sqm_eur <= median_ppm * (1 - discount)
+            and not features.get("needs_renovation")
+        )
+        match = preferred or alternative_ok
+        expected = f"{intent.preferred_construction_age} или алтернатива поне {discount:.0%} под кварталната медиана"
+        add("conditional_construction", "met" if match else ("unknown" if listing.construction_age is None else "unmet"), 0, 0, listing.construction_age, expected, "Предпочитанието за строителство или условието за ценова отстъпка е изпълнено." if match else "Алтернативното строителство не покрива условието за отстъпка.")
+        hard_passed &= match
 
     # Location — 20
     if intent.locations:
@@ -33,7 +65,12 @@ def score_listing(listing: Listing, intent: SearchIntent, median_ppm: float | No
         add("location", "met" if match else "unmet", 20, 1 if match else 0, listing.district, ", ".join(intent.locations), "Локацията съвпада." if match else "Имотът е извън предпочитаните квартали.")
         hard_passed &= match
     else:
-        add("location", "met", 20, 1, listing.district, "Велико Търново", "Имотът е във Велико Търново.")
+        add("location", "met", 20, 1, listing.district, settings.target_city, f"Имотът е в {settings.target_city}.")
+
+    if intent.excluded_locations:
+        excluded = bool(listing.district and any(place.lower() in listing.district.lower() for place in intent.excluded_locations))
+        add("excluded_location", "unmet" if excluded else "met", 0, 0, listing.district, f"извън {', '.join(intent.excluded_locations)}", "Кварталът е изключен от условието за тиха локация." if excluded else "Кварталът не е сред изключените локации.")
+        hard_passed &= not excluded
 
     # Budget — 15
     if intent.max_price_eur:
@@ -71,7 +108,6 @@ def score_listing(listing: Listing, intent: SearchIntent, median_ppm: float | No
     else:
         add("price_per_sqm", "unknown", 15, 0.4, listing.price_per_sqm_eur, median_ppm, "Няма достатъчно данни за сравнение на цена на кв.м.")
 
-    features = _features(listing)
     floor_bad = (intent.exclude_last_floor and listing.floor_number is not None and listing.total_floors is not None and listing.floor_number >= listing.total_floors) or (intent.exclude_ground_floor and (listing.floor_number == 0 or (listing.floor_label or "").lower() == "партер"))
     add("floor", "unmet" if floor_bad else ("unknown" if listing.floor_number is None else "met"), 8, 0 if floor_bad else (0.5 if listing.floor_number is None else 1), listing.floor_number, "не последен/партер", "Етажът нарушава изрично условие." if floor_bad else "Няма установен конфликт с етажа.")
     hard_passed &= not floor_bad
@@ -86,8 +122,25 @@ def score_listing(listing: Listing, intent: SearchIntent, median_ppm: float | No
     feature_ratio = len(hits) / len(preferred) if preferred else 0.7
     add("features", "met" if preferred and len(hits) == len(preferred) else ("partial" if hits else "unknown"), 5, feature_ratio, ", ".join(hits) or None, ", ".join(sorted(preferred)) or None, "Предпочитаните удобства са отчетени от описанието.")
 
+    negative_hits = [key for key in intent.negative_features if features.get(key)]
+    if intent.negative_features:
+        add("negative_features", "unmet" if negative_hits else "met", 8, -1 if negative_hits else 0, ", ".join(negative_hits) or None, "без голям булевард/шумни фактори", "Описанието подсказва близост до голям булевард, което намалява оценката за спокойна среда." if negative_hits else "Не е открит изричен сигнал за близост до голям булевард.")
+
+    for key in intent.report_missing_features:
+        if key == "noise_info":
+            known = "quiet_environment" in features or "major_road" in features
+            actual = "има информация" if known else None
+            label = "шум или спокойна среда"
+        else:
+            known = key in features
+            actual = features.get(key) if known else None
+            label = {"elevator": "асансьор", "parking": "паркиране", "near_park": "парк", "near_school": "училище"}.get(key, key)
+        add(f"missing_{key}", "met" if known else "unknown", 0, 0, actual, label, f"Има информация за {label}." if known else f"В обявата не е намерена надеждна информация за {label}; това трябва да се провери с брокера.")
+
     quality = min(1, len(listing.description or "") / 500)
     add("information_quality", "met" if quality >= 0.8 else "partial", 5, quality, f"{len(listing.description or '')} знака", "подробно описание", "По-пълното описание намалява неизвестните.")
+    if intent.description_focus == "short_or_unclear":
+        add("description_risk", "partial", 0, 0, f"{len(listing.description or '')} знака", "кратко или неясно описание", "Описанието е кратко или използва общи фрази. Провери обзавеждането, състоянието и реалното разпределение с брокера.")
 
     score = round(sum(line.points for line in lines), 1)
     if not hard_passed:

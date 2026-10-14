@@ -7,7 +7,7 @@ import { api, euro, Listing } from "@/lib/api";
 
 const rows: [string, (x: Listing) => string][] = [
   ["Цена", (x) => euro(x.price_eur)], ["Цена на м²", (x) => x.price_per_sqm_eur ? `${Math.round(x.price_per_sqm_eur)} €` : "—"],
-  ["Локация", (x) => x.district || "—"], ["Площ", (x) => x.area_sqm ? `${x.area_sqm} м²` : "—"], ["Тип", (x) => x.property_type || "—"],
+  ["Локация", (x) => x.district || "—"], ["Сделка", (x) => x.transaction_type === "rent" ? "Под наем" : "Продажба"], ["Строителство", (x) => x.construction_age === "new" ? "Ново" : x.construction_age === "old" ? "Старо" : "—"], ["Площ", (x) => x.area_sqm ? `${x.area_sqm} м²` : "—"], ["Тип", (x) => x.property_type || "—"],
   ["Стаи", (x) => String(x.room_count || "—")], ["Етаж", (x) => `${x.floor_number ?? "—"} / ${x.total_floors ?? "—"}`], ["Състояние", (x) => x.condition || "—"],
 ];
 

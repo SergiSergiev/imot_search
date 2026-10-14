@@ -18,7 +18,11 @@ from ..schemas import ManualListing
 from .normalizer import content_hash, extract_features, normalize_price
 
 
-TRACKED_FIELDS = ("title", "description", "price_eur", "area_sqm", "district", "floor_number", "condition")
+TRACKED_FIELDS = (
+    "title", "description", "transaction_type", "price_eur", "area_sqm",
+    "district", "floor_number", "condition", "construction_type",
+    "construction_age", "construction_year",
+)
 
 
 def _validate_imot_url(url: str) -> None:
@@ -92,6 +96,56 @@ def _extract_number(pattern: str, text: str) -> float | None:
     return float(match.group(1).replace(" ", "").replace(",", ".")) if match else None
 
 
+def _classify_transaction(url: str, title: str, page_text: str) -> str:
+    """Use the strongest page signals and avoid rental words in free-form copy."""
+    decisive = f"{url} {title}".lower()
+    if re.search(r"под[\s_-]*наем|dava[\s_-]*pod[\s_-]*naem|(?:^|[\W_])naem(?:[\W_]|$)", decisive):
+        return "rent"
+    if re.search(r"продава|продажба|prodava|sale", decisive):
+        return "sale"
+    heading_text = page_text[:1500].lower()
+    return "rent" if re.search(r"дава\s+под\s+наем|оферта\s+под\s+наем", heading_text) else "sale"
+
+
+def _classify_construction(text: str, year: int | None) -> str | None:
+    lower = text.lower()
+    if re.search(r"старо\s+строителство|стара\s+(?:тухла|сграда)|гредоред", lower):
+        return "old"
+    if re.search(r"ново\s+строителство|новопостроен|нова\s+сграда|в\s+строеж|стартирало\s+строителство|ще\s+бъде\s+въведен\s+в\s+експлоатация|акт\s*(?:14|15|16)", lower):
+        return "new"
+    if year:
+        return "new" if year >= 2000 else "old"
+    return None
+
+
+def classify_property_type(url: str, title: str) -> str:
+    """Classify from the listing heading/slug; never default unknown assets to apartment."""
+    text = f"{title} {url}".lower()
+    title_lower = title.lower()
+    specific_types = (
+        (r"паркомясто", "паркомясто"),
+        (r"гараж", "гараж"),
+        (r"магазин", "магазин"),
+        (r"склад", "склад"),
+        (r"пром\.?\s*помещение|промишлено помещение", "промишлено помещение"),
+        (r"фризьорски|козметичен салон|салон", "салон"),
+        (r"заведение|ресторант|кафе", "заведение"),
+        (r"самостоятелна сграда", "сграда"),
+        (r"етаж от къща", "етаж от къща"),
+        (r"мезонет", "мезонет"),
+        (r"ателие|таван", "ателие"),
+        (r"къща|вила", "къща"),
+        (r"офис", "офис"),
+        (r"парцел", "парцел"),
+    )
+    for pattern, value in specific_types:
+        if re.search(pattern, title_lower):
+            return value
+    if re.search(r"(?:^|\D)\d+-стаен|едностаен|двустаен|тристаен|четиристаен|многостаен|апартамент", text):
+        return "апартамент"
+    return "друго"
+
+
 def parse_listing_page(url: str, html: str) -> ManualListing:
     soup = BeautifulSoup(html, "html.parser")
     title = (soup.select_one(".advHeader .title") or soup.select_one(".galleryInfo .title") or soup.select_one("h1") or soup.select_one("title"))
@@ -114,7 +168,7 @@ def parse_listing_page(url: str, html: str) -> ManualListing:
             absolute = urljoin(url, src)
             if absolute not in images:
                 images.append(absolute)
-    property_type = next((kind for kind in ("апартамент", "къща", "офис", "парцел", "мезонет", "ателие") if kind in title_text.lower()), "апартамент")
+    property_type = classify_property_type(url, title_text)
     room_map = {"едностаен": 1, "двустаен": 2, "тристаен": 3, "четиристаен": 4}
     rooms = next((count for word, count in room_map.items() if word in title_text.lower()), None)
     numeric_rooms = re.search(r"(\d+)-СТАЕН", title_text, re.I)
@@ -127,11 +181,32 @@ def parse_listing_page(url: str, html: str) -> ManualListing:
     if loc:
         district = loc.group(1).strip()[:150]
     city_match = re.search(r"(?:град|гр\.)\s+([А-ЯA-Z][А-Яа-яA-Za-z -]+?)(?:\s*,|\s+-|$)", location_text)
+    year_match = re.search(r"(?:година(?:\s+на\s+строителство)?|построен[ао]?)\s*[:\-]?\s*((?:18|19|20)\d{2})", params_text, re.I)
+    if not year_match:
+        year_match = re.search(r"((?:18|19|20)\d{2})\s*г\.?", params_text, re.I)
+    construction_year = int(year_match.group(1)) if year_match else None
+    construction_type = next((label for pattern, label in (
+        (r"\bтухла\b", "тухла"), (r"\bпанел\b", "панел"),
+        (r"\bепк\b", "ЕПК"), (r"\bпк\b", "ПК"), (r"\bгредоред\b", "гредоред"),
+    ) if re.search(pattern, params_text, re.I)), None)
+    construction_age = _classify_construction(f"{params_text} {description}", construction_year)
+    full_property_text = f"{params_text} {description}"
+    condition = next((label for pattern, label in (
+        (r"за\s+основен\s+ремонт|нуждае\s+се\s+от\s+ремонт", "за ремонт"),
+        (r"до\s+ключ|готов\s+за\s+нанасяне", "готов за нанасяне"),
+        (r"напълно\s+обзаведен", "напълно обзаведен"),
+        (r"необзаведен", "необзаведен"),
+        (r"обзаведен", "обзаведен"),
+    ) if re.search(pattern, full_property_text, re.I)), None)
+    phone_match = re.search(r"(?:\+359|0)[\d\s()-]{7,16}\d", page_text)
+    contact_node = soup.select_one(".contactInfo .name, .brokerName, [class*='contact-name']")
+    scraped_features = {key: item["value"] for key, item in extract_features(full_property_text).items()}
     return ManualListing(
         source_listing_id=source_id,
         source_url=url,
         title=title_text[:500],
         description=description[:15000],
+        transaction_type=_classify_transaction(url, title_text, page_text),
         property_type=property_type,
         room_count=rooms,
         price_eur=price,
@@ -140,7 +215,14 @@ def parse_listing_page(url: str, html: str) -> ManualListing:
         district=district,
         floor_number=int(floor.group(1)) if floor else None,
         total_floors=int(floor.group(2)) if floor and floor.group(2) else None,
+        condition=condition,
+        construction_type=construction_type,
+        construction_age=construction_age,
+        construction_year=construction_year,
+        contact_name=contact_node.get_text(" ", strip=True)[:200] if contact_node else None,
+        contact_phone=re.sub(r"\s+", " ", phone_match.group(0)).strip() if phone_match else None,
         images=images[:30],
+        features=scraped_features,
     )
 
 

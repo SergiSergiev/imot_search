@@ -57,6 +57,7 @@ class Listing(Base):
     total_floors: Mapped[int | None] = mapped_column(Integer)
     condition: Mapped[str | None] = mapped_column(String(100))
     construction_type: Mapped[str | None] = mapped_column(String(100))
+    construction_age: Mapped[str | None] = mapped_column(String(20), index=True)
     construction_year: Mapped[int | None] = mapped_column(Integer)
     contact_name: Mapped[str | None] = mapped_column(String(200))
     contact_phone: Mapped[str | None] = mapped_column(String(80))
